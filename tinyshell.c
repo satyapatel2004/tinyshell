@@ -1,75 +1,160 @@
-#include <stdio.h>
+#include <stdio.h> 
 #include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <sys/wait.h>
+#include <unistd.h> 
+#include <string.h> 
 
-#define MAX_ARGS 100
+/*
+1.Read
+2.Parse
+3.Execute 
+*/
 
-struct shell {
-    char hostname[1024];
-}; 
+#define TNYSH_RL_BUFSIZE 1024
+#define TNYSHL_TOK_BUFSIZE 1024
+#define TNYSH_TOK_DELIM " \t\r\n\a"
 
-void initShell(struct shell *usershell) {
-    usershell->hostname[1023] = '\0'; 
+//definition of a Command. 
+typedef struct {
+    int commandsize; 
+    char *command; 
+    char **tokens; 
+    int tokensize;  
+} Command; 
 
-    //getting the user's host information. 
-    if(gethostname(usershell->hostname, 1023) != 0) {
-        perror("gethostname"); 
-        exit(EXIT_FAILURE);
-    }  
-}
+//definition of a Shell 
+typedef struct {
+    char hostname[1024]; 
+    Command **history;
+    int history_size;
+} Shell; 
 
-// Function to parse the input line into command and arguments
-void parse_line(char *line, char **args) {
-    int i = 0;
-    args[i] = strtok(line, " \t\n");
-    while (args[i] != NULL) {
-        i++;
-        args[i] = strtok(NULL, " \t\n");
+//shell_init creates a Shell, and attempts to populate it with the host's name. 
+Shell *shell_init() {
+    Shell *usershell = malloc(sizeof(Shell)); 
+    usershell->history = NULL; 
+    usershell->history_size = 1; 
+
+    //getting the host's name: 
+    if(gethostname(usershell->hostname, sizeof(usershell->hostname)) != 0) {
+        strncpy(usershell->hostname, "unknown", sizeof(usershell->hostname)); 
     }
+
+    return usershell; 
 }
 
-//nothing
+//creates an empty instance of a command (for use in main)
+Command *command_init() {
+    Command *comm = malloc(sizeof(Command)); 
+    comm->command = NULL; 
+    comm->tokens = NULL; 
+    comm->tokensize = NULL; 
+    comm->commandsize = NULL; 
+    return comm; 
+}
 
-int main() {
-    char *line = NULL;
-    size_t len = 0;
-    char *args[MAX_ARGS];
+//read_command(comm) consumes a command and reads it into a single line. (could've used getline but oh well)
+void read_command(Command *comm) {
+    comm->commandsize = TNYSH_RL_BUFSIZE; 
+    comm->command = malloc(sizeof(char) * comm->commandsize);
 
-    struct shell usershell; 
-    initShell(&usershell); 
+    int c; 
+    int position = 0; 
 
-    while (1) {
-        printf("%s$-> ", usershell.hostname);
-        getline(&line, &len, stdin);
-        parse_line(line, args);
+    //if we were unsuccesfully able to implement a command: 
+    if(!comm->command) {
+        fprintf(stderr, "tinysh: allocation erorr\n"); 
+        exit(EXIT_FAILURE); 
+    }
 
-        if (args[0] == NULL) continue; // Empty command
+    //loop that will read from stdin until a newline of EOF is occured to get the newline. 
+    while(1) {
+        //read a character: 
+        c = getchar(); 
 
-        if (strcmp(args[0], "exit") == 0) {
-            break;
-        } else if (strcmp(args[0], "cd") == 0) {
-            if (args[1] != NULL) {
-                if (chdir(args[1]) != 0) {
-                    perror("chdir");
-                }
-            }
+        if(c == EOF || c == '\n') {
+            comm->command[position] = '\0';
+            return; 
         } else {
-            pid_t pid = fork();
-            if (pid < 0) {
-                perror("fork");
-            } else if (pid == 0) {
-                if (execvp(args[0], args) < 0) {
-                    perror("execvp");
-                    exit(EXIT_FAILURE);
-                }
-            } else {
-                wait(NULL);
+            comm->command[position] = c; 
+        }
+        position ++; 
+
+        //reallocate if we have exceeded **the very large** command: 
+        if(position >= comm->commandsize) {
+            comm->commandsize += TNYSH_RL_BUFSIZE; 
+            comm->command = realloc(comm->command, comm->commandsize); 
+            if(!comm->command) {
+                fprintf(stderr, "tinysh: allocation error \n"); 
+                exit(EXIT_FAILURE); 
             }
         }
     }
-
-    free(line);
-    return 0;
 }
+
+//parse_command(com) consumes a Command and parses it into seperate "tokens" or "args". 
+void parse_command(Command *com) {
+    com->tokensize = TNYSHL_TOK_BUFSIZE;  
+
+    com->tokens = malloc(com->tokensize * sizeof(char*)); 
+    char *token; 
+
+    if(!com->tokens) {
+        fprintf(stderr, "tinysh: allocation error\n"); 
+        exit(EXIT_FAILURE); 
+    }
+
+    //tokenisze the lined based on the delimeters that we have defined (see above)
+    int position = 0; 
+    token = strtok(com->command, TNYSH_TOK_DELIM); 
+    while(token != NULL) {
+        //adding to the tokens argument in the Command 
+        com->tokens[position] = token; 
+        position++; 
+
+        if(position >= com->tokensize) {
+            com->tokensize += TNYSHL_TOK_BUFSIZE; 
+            com->tokens = realloc(com->tokens, com->tokensize * sizeof(char *)); 
+
+            if(!com->tokens) {
+                fprintf(stderr, "lsh: allocation error\n"); 
+                exit(EXIT_FAILURE); 
+            }
+        }
+
+        token = strtok(NULL, TNYSH_TOK_DELIM); 
+    }
+    com->tokens[position] = NULL; 
+}
+
+//main loop for execution of commands. 
+void tinysh_loop(Command *com, Shell *sh) {
+    int status; 
+    do {
+        printf("%s tinysh:> ", sh->hostname);
+        read_command(com);
+        parse_command(com); 
+        status = tinysh_execute(com->tokens); 
+
+        free(com->command); 
+        free(com->tokens); 
+    } while(status); 
+}
+
+
+int main(void) {
+    Shell *sh = shell_init(); 
+    Command *com = command_init(); 
+
+    tinysh_loop(com, sh); 
+
+    return EXIT_SUCCESS; 
+
+    free(sh->history);
+    free(com->command); 
+    free(com->tokens); 
+    free(sh);  
+    free(com); 
+
+}
+
+
